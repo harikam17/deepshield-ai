@@ -855,7 +855,7 @@
 // ═══════════════════════════════════════════════════════
 //  CONFIG
 // ═══════════════════════════════════════════════════════
-const API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+const API_BASE_URL = 'https://deepshield-ai-backend.onrender.com'; || window.location.hostname === '127.0.0.1'
   ? 'https://deepshield-ai-backend.onrender.com'
   : (window.DEEPSHIELD_API_URL || 'https://deepshield-ai-backend.onrender.com');
 
@@ -911,19 +911,20 @@ function hideLoading() {
 // ═══════════════════════════════════════════════════════
 async function checkHealth() {
   try {
-    const res = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(4000) });
+    const res = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(15000) });
     if (res.ok) {
       backendOnline = true;
       document.getElementById('statusDot').className = 'status-dot online';
       document.getElementById('statusText').textContent = 'Backend Online';
       document.getElementById('offlineBanner').classList.remove('visible');
-      return;
+      return true;
     }
   } catch (_) {}
   backendOnline = false;
   document.getElementById('statusDot').className = 'status-dot offline';
-  document.getElementById('statusText').textContent = 'Offline Mode';
+  document.getElementById('statusText').textContent = 'Waking up backend…';
   document.getElementById('offlineBanner').classList.add('visible');
+  return false;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1011,8 +1012,18 @@ async function predictFromBackend(file) {
   const formData = new FormData();
   formData.append('image', file);
 
+  // Wake up backend first if needed
+  if (!backendOnline) {
+    document.getElementById('loadingText').textContent = 'WAKING UP BACKEND (30s)…';
+    for (let i = 0; i < 3; i++) {
+      const alive = await checkHealth();
+      if (alive) break;
+      await new Promise(r => setTimeout(r, 10000));
+    }
+  }
+
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), 60000);
 
   try {
     const res = await fetch(`${API_BASE_URL}/predict`, {
@@ -1021,7 +1032,6 @@ async function predictFromBackend(file) {
       signal: controller.signal,
     });
     clearTimeout(timeout);
-
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Server error' }));
       throw new Error(err.error || `HTTP ${res.status}`);
@@ -1029,7 +1039,7 @@ async function predictFromBackend(file) {
     return await res.json();
   } catch (e) {
     clearTimeout(timeout);
-    if (e.name === 'AbortError') throw new Error('Request timed out after 30s');
+    if (e.name === 'AbortError') throw new Error('Request timed out — backend may be sleeping. Try again in 30 seconds.');
     throw e;
   }
 }
