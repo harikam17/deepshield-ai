@@ -78,7 +78,7 @@ class DeepfakeDetector:
         fake_prob = raw_prob
         confidence = abs(fake_prob - 0.5) * 2 * 100
         confidence = self._calibrate_confidence(confidence)
-        is_fake = fake_prob >= 0.5
+        is_fake = fake_prob >= 0.45
         explanation = self._generate_explanation(img_array, fake_prob, confidence)
         return self._build_result(is_fake, confidence, fake_prob, explanation)
 
@@ -95,16 +95,14 @@ class DeepfakeDetector:
         b_mean = float(np.mean(img_array[:, :, 2]))
         color_var = float(np.std([r_mean, g_mean, b_mean])) / 128.0
 
-        # Boosted sensitivity — more aggressive fake detection
         fake_score = (hf_score * 0.55 + color_var * 0.35 + (std_val / 128.0) * 0.1)
         fake_prob = min(max(fake_score, 0.05), 0.95)
 
         confidence = abs(fake_prob - 0.5) * 2 * 100
         confidence = self._calibrate_confidence(confidence)
 
-        is_fake = fake_prob >= 0.45  # Lower threshold — easier to flag as fake
         explanation = self._generate_explanation(img_array, fake_prob, confidence)
-        return self._build_result(is_fake, confidence, fake_prob, explanation)
+        return self._build_result(False, confidence, fake_prob, explanation)
 
     def _calibrate_confidence(self, raw_confidence: float) -> float:
         c = raw_confidence / 100.0
@@ -144,13 +142,7 @@ class DeepfakeDetector:
         }
 
     def _build_result(self, is_fake: bool, confidence: float, fake_prob: float, explanation: dict) -> dict:
-        # No more UNCERTAIN — always give FAKE or REAL
-        if is_fake or fake_prob >= 0.45:
-            result_label = "FAKE" if fake_prob >= 0.45 else "REAL"
-        else:
-            result_label = "REAL"
-
-        # Clean label logic
+        # Always FAKE or REAL — no UNCERTAIN
         if fake_prob >= 0.45:
             result_label = "FAKE"
         else:
