@@ -1,8 +1,6 @@
 import os
 import numpy as np
-import json
 
-# Lazy import TensorFlow to speed up startup and handle import errors gracefully
 _tf = None
 _keras = None
 
@@ -26,11 +24,9 @@ class DeepfakeDetector:
         self._load_or_build_model()
 
     def _load_or_build_model(self):
-        """Load existing model or build and save a new one."""
         try:
             tf, keras = _get_tf()
             os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
-
             if os.path.exists(MODEL_PATH):
                 print("[DeepShield] Loading existing model...")
                 self.model = keras.models.load_model(MODEL_PATH)
@@ -49,25 +45,14 @@ class DeepfakeDetector:
             self.model_loaded = False
 
     def _build_model(self, keras):
-        """Build EfficientNetB0-based binary classifier."""
         from tensorflow.keras.applications import EfficientNetB0
-        from tensorflow.keras.layers import (
-            GlobalAveragePooling2D, Dense, Dropout, BatchNormalization
-        )
+        from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout, BatchNormalization
         from tensorflow.keras import Model, Input
 
         inputs = Input(shape=(224, 224, 3))
-
-        base = EfficientNetB0(
-            include_top=False,
-            weights="imagenet",
-            input_tensor=inputs,
-        )
-
-        # Freeze base layers initially
+        base = EfficientNetB0(include_top=False, weights="imagenet", input_tensor=inputs)
         for layer in base.layers[:-20]:
             layer.trainable = False
-
         x = base.output
         x = GlobalAveragePooling2D()(x)
         x = BatchNormalization()(x)
@@ -76,111 +61,65 @@ class DeepfakeDetector:
         x = Dense(64, activation="relu")(x)
         x = Dropout(0.2)(x)
         output = Dense(1, activation="sigmoid")(x)
-
         model = Model(inputs=inputs, outputs=output)
-        model.compile(
-            optimizer="adam",
-            loss="binary_crossentropy",
-            metrics=["accuracy"],
-        )
+        model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
         return model
 
     def predict(self, img_array: np.ndarray) -> dict:
-        """
-        Run prediction on preprocessed image array.
-        Returns structured result dict with explanation.
-        """
         if self.model is not None:
             return self._cnn_predict(img_array)
         else:
             return self._analytical_predict(img_array)
 
     def _cnn_predict(self, img_array: np.ndarray) -> dict:
-        """Real CNN inference path."""
         tf, keras = _get_tf()
-
-        # img_array shape: (224, 224, 3) → expand to (1, 224, 224, 3)
         batch = np.expand_dims(img_array, axis=0)
-
         raw_prob = float(self.model.predict(batch, verbose=0)[0][0])
-
-        # raw_prob close to 1 → FAKE, close to 0 → REAL
         fake_prob = raw_prob
-        real_prob = 1.0 - raw_prob
-
-        # Confidence is how far from 0.5
-        confidence = abs(fake_prob - 0.5) * 2 * 100  # 0–100 scale
-
-        # Apply calibration: pull extreme values slightly toward center
+        confidence = abs(fake_prob - 0.5) * 2 * 100
         confidence = self._calibrate_confidence(confidence)
-
         is_fake = fake_prob >= 0.5
-
-        # Derive sub-scores from image statistics + model output
         explanation = self._generate_explanation(img_array, fake_prob, confidence)
-
         return self._build_result(is_fake, confidence, fake_prob, explanation)
 
     def _analytical_predict(self, img_array: np.ndarray) -> dict:
-        """
-        Analytical fallback when TF not available.
-        Uses image statistics (DCT noise, edge density, compression artifacts)
-        to produce a meaningful, non-random prediction.
-        """
-        # Statistical features
-        mean_val = float(np.mean(img_array))
         std_val = float(np.std(img_array))
-        channel_diff = float(np.std(np.mean(img_array, axis=(0, 1))))
 
-        # High frequency noise (proxy for GAN artifacts)
         dx = np.diff(img_array.astype(np.float32), axis=0)
         dy = np.diff(img_array.astype(np.float32), axis=1)
         hf_noise = float(np.mean(np.abs(dx)) + np.mean(np.abs(dy)))
-
-        # Normalize hf_noise to 0–1
         hf_score = min(hf_noise / 30.0, 1.0)
 
-        # Color channel imbalance (GANs often have slight imbalances)
         r_mean = float(np.mean(img_array[:, :, 0]))
         g_mean = float(np.mean(img_array[:, :, 1]))
         b_mean = float(np.mean(img_array[:, :, 2]))
         color_var = float(np.std([r_mean, g_mean, b_mean])) / 128.0
 
-        # Combine signals into fake probability
-        fake_score = (hf_score * 0.5 + color_var * 0.3 + (std_val / 128.0) * 0.2)
+        # Boosted sensitivity — more aggressive fake detection
+        fake_score = (hf_score * 0.55 + color_var * 0.35 + (std_val / 128.0) * 0.1)
         fake_prob = min(max(fake_score, 0.05), 0.95)
+
         confidence = abs(fake_prob - 0.5) * 2 * 100
         confidence = self._calibrate_confidence(confidence)
 
-        is_fake = fake_prob >= 0.5
+        is_fake = fake_prob >= 0.45  # Lower threshold — easier to flag as fake
         explanation = self._generate_explanation(img_array, fake_prob, confidence)
-
         return self._build_result(is_fake, confidence, fake_prob, explanation)
 
     def _calibrate_confidence(self, raw_confidence: float) -> float:
-        """
-        Platt-style calibration: compress extreme confidence values.
-        Prevents overconfident predictions.
-        """
-        # Map to 0–1
         c = raw_confidence / 100.0
-        # Sigmoid-like compression
         c = c ** 0.85
         return round(c * 100.0, 1)
 
     def _generate_explanation(self, img_array: np.ndarray, fake_prob: float, confidence: float) -> dict:
-        """Generate XAI explanation scores from image features."""
-        # Face consistency: inverse of edge irregularity
         edges = np.abs(np.diff(img_array.astype(np.float32), axis=0))
         edge_irregularity = float(np.std(edges)) / 128.0
         face_consistency_score = max(0.0, 1.0 - edge_irregularity * 2)
 
-        # Texture artifacts: high-freq noise ratio
         dx = np.diff(img_array.astype(np.float32), axis=1)
         hf = float(np.mean(np.abs(dx))) / 128.0
         texture_artifact_score = min(hf * 3.0, 1.0)
 
-        # Compression anomalies: block artifact proxy (8x8 grid variance)
         h, w = img_array.shape[:2]
         block_means = []
         for i in range(0, h - 8, 8):
@@ -190,56 +129,39 @@ class DeepfakeDetector:
         block_var = float(np.std(block_means)) / 128.0
         compression_score = min(block_var * 2.0, 1.0)
 
-        def level(score, invert=False):
-            if invert:
-                score = 1.0 - score
-            if score < 0.35:
-                return "LOW"
-            elif score < 0.65:
-                return "MEDIUM"
-            else:
-                return "HIGH"
-
-        face_level = level(face_consistency_score)
-        texture_level = level(texture_artifact_score)
-        compression_level = level(compression_score)
+        def level(score):
+            if score < 0.35: return "LOW"
+            elif score < 0.65: return "MEDIUM"
+            else: return "HIGH"
 
         return {
-            "face_consistency": face_level,
-            "texture_artifacts": texture_level,
-            "compression_anomalies": compression_level,
+            "face_consistency": level(face_consistency_score),
+            "texture_artifacts": level(texture_artifact_score),
+            "compression_anomalies": level(compression_score),
             "face_consistency_score": round(face_consistency_score * 100, 1),
             "texture_artifact_score": round(texture_artifact_score * 100, 1),
             "compression_score": round(compression_score * 100, 1),
         }
 
     def _build_result(self, is_fake: bool, confidence: float, fake_prob: float, explanation: dict) -> dict:
-        """Build final structured result."""
-        # Confidence thresholds
-      if confidence < 70:
-    result_label = "FAKE" if fake_prob >= 0.45 else "REAL"
-    message = None
-elif is_fake:
-    result_label = "FAKE"
-else:
-    result_label = "REAL"
-
-        # Authenticity score: 0 = definitely fake, 100 = definitely real
-        if result_label == "UNCERTAIN":
-            authenticity_score = 50
-        elif result_label == "FAKE":
-            authenticity_score = round((1.0 - fake_prob) * 100 * (confidence / 100), 1)
+        # No more UNCERTAIN — always give FAKE or REAL
+        if is_fake or fake_prob >= 0.45:
+            result_label = "FAKE" if fake_prob >= 0.45 else "REAL"
         else:
-            authenticity_score = round((1.0 - fake_prob) * 100, 1)
+            result_label = "REAL"
+
+        # Clean label logic
+        if fake_prob >= 0.45:
+            result_label = "FAKE"
+        else:
+            result_label = "REAL"
+
+        authenticity_score = round((1.0 - fake_prob) * 100, 1)
         authenticity_score = max(0, min(100, authenticity_score))
 
-        # Risk score: higher = more likely fake
         risk_score = round(fake_prob * 100 * (confidence / 100))
-        if result_label == "UNCERTAIN":
-            risk_score = round(50 + (fake_prob - 0.5) * 20)
         risk_score = max(0, min(100, risk_score))
 
-        # Risk level
         if risk_score < 30:
             risk_level = "LOW"
         elif risk_score < 60:
@@ -247,7 +169,6 @@ else:
         else:
             risk_level = "HIGH"
 
-        # Confidence tier
         if confidence >= 85:
             confidence_tier = "HIGH"
         elif confidence >= 70:
@@ -255,7 +176,7 @@ else:
         else:
             confidence_tier = "LOW"
 
-        result = {
+        return {
             "result": result_label,
             "confidence": confidence,
             "confidence_tier": confidence_tier,
@@ -265,9 +186,3 @@ else:
             "fake_probability": round(fake_prob * 100, 1),
             "explanation": explanation,
         }
-
-        if message:
-            result["message"] = message
-
-        return result
-
