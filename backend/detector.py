@@ -216,15 +216,13 @@ class DeepfakeDetector:
     def _build_result(self, is_fake: bool, confidence: float, fake_prob: float, explanation: dict) -> dict:
         """Build final structured result."""
         # Confidence thresholds
-        if confidence < 70:
-            result_label = "UNCERTAIN"
-            message = "Model confidence too low for reliable classification."
-        elif is_fake:
-            result_label = "FAKE"
-            message = None
-        else:
-            result_label = "REAL"
-            message = None
+      if confidence < 70:
+    result_label = "FAKE" if fake_prob >= 0.45 else "REAL"
+    message = None
+elif is_fake:
+    result_label = "FAKE"
+else:
+    result_label = "REAL"
 
         # Authenticity score: 0 = definitely fake, 100 = definitely real
         if result_label == "UNCERTAIN":
