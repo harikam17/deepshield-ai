@@ -126,13 +126,13 @@
     .history-risk.MEDIUM{background:rgba(255,179,64,0.1);color:var(--uncertain)}
     .history-risk.HIGH{background:rgba(255,62,108,0.1);color:var(--fake)}
     .history-empty{text-align:center;padding:24px;font-size:0.78rem;color:var(--text-dim);font-family:var(--font-mono)}
-    .loading-overlay{position:fixed;inset:0;z-index:100;background:rgba(4,12,24,0.88);backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;flex-direction:column;gap:20px}
+    .loading-overlay{position:fixed;inset:0;z-index:100;background:rgba(4,12,24,0.88);backdrop-filter:blur(8px);display:none;align-items:center;justify-content:center;flex-direction:column;gap:16px}
     .loading-overlay.visible{display:flex}
     .spinner{width:56px;height:56px;border:3px solid rgba(0,200,255,0.1);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite}
     @keyframes spin{to{transform:rotate(360deg)}}
     .loading-text{font-family:var(--font-mono);font-size:0.8rem;color:var(--accent);letter-spacing:0.12em;animation:blink 1.4s ease infinite}
+    .loading-sub{font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.06em;text-align:center;max-width:320px}
     @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
-    .loading-sub{font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.08em}
     .toast-container{position:fixed;top:24px;right:24px;display:flex;flex-direction:column;gap:10px;z-index:200}
     .toast{padding:12px 18px;border-radius:var(--radius-sm);font-size:0.82rem;font-weight:500;backdrop-filter:blur(16px);animation:toastIn 0.3s ease,toastOut 0.3s ease 2.7s forwards;max-width:320px;box-shadow:var(--shadow)}
     @keyframes toastIn{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
@@ -171,7 +171,7 @@
 </header>
 
 <div class="offline-banner" id="offlineBanner">
-  ⚠ Backend is waking up — this may take 30–60 seconds on first load. Please wait then try again.
+  ⚠ Reconnecting to backend — please wait a moment…
 </div>
 
 <div class="toast-container" id="toastContainer"></div>
@@ -355,11 +355,13 @@
 </div>
 
 <script>
+// ── CONFIG ────────────────────────────────────────────
 const API_BASE_URL = 'https://deepshield-ai-backend.onrender.com';
 const HISTORY_KEY  = 'deepshield_history_v2';
 let backendOnline  = false;
 let currentFile    = null;
 let charts         = {};
+let wakingUp       = false;
 
 // ── TOAST ─────────────────────────────────────────────
 function toast(msg, type='info', duration=3500) {
@@ -378,10 +380,10 @@ const loadingMessages = [
 ];
 let loadingInterval;
 
-function showLoading(sub='') {
+function showLoading() {
   let i = 0;
   document.getElementById('loadingText').textContent = loadingMessages[0];
-  document.getElementById('loadingSub').textContent = sub;
+  document.getElementById('loadingSub').textContent = '';
   loadingInterval = setInterval(() => {
     i = (i+1) % loadingMessages.length;
     document.getElementById('loadingText').textContent = loadingMessages[i];
@@ -400,10 +402,12 @@ function hideLoading() {
   document.getElementById('scanLine').classList.remove('active');
 }
 
-// ── HEALTH CHECK ──────────────────────────────────────
+// ── HEALTH CHECK (silent — never shows error on its own) ──
 async function checkHealth(timeout=15000) {
   try {
-    const res = await fetch(`${API_BASE_URL}/health`, { signal: AbortSignal.timeout(timeout) });
+    const res = await fetch(`${API_BASE_URL}/health`, {
+      signal: AbortSignal.timeout(timeout)
+    });
     if (res.ok) {
       backendOnline = true;
       document.getElementById('statusDot').className = 'status-dot online';
@@ -413,22 +417,30 @@ async function checkHealth(timeout=15000) {
     }
   } catch(_) {}
   backendOnline = false;
-  document.getElementById('statusDot').className = 'status-dot offline';
-  document.getElementById('statusText').textContent = 'Backend Sleeping…';
-  document.getElementById('offlineBanner').classList.add('visible');
+  document.getElementById('statusDot').className = 'status-dot waking';
+  document.getElementById('statusText').textContent = 'Connecting…';
   return false;
 }
 
-// Wake backend with retries
-async function wakeBackend() {
+// ── WAKE BACKEND (retries silently) ───────────────────
+async function wakeBackend(showSub=false) {
+  if (wakingUp) return backendOnline;
+  wakingUp = true;
   document.getElementById('statusDot').className = 'status-dot waking';
-  document.getElementById('statusText').textContent = 'Waking backend…';
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    setLoadingSub(`Waking backend… attempt ${attempt}/4 (Render free tier sleeps after 15min)`);
+  document.getElementById('statusText').textContent = 'Connecting…';
+
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    if (showSub) setLoadingSub(`Connecting to backend… (${attempt}/6)`);
     const alive = await checkHealth(20000);
-    if (alive) return true;
-    await new Promise(r => setTimeout(r, 8000));
+    if (alive) { wakingUp = false; return true; }
+    await new Promise(r => setTimeout(r, 10000));
   }
+
+  // All retries failed — show banner but DON'T crash
+  document.getElementById('offlineBanner').classList.add('visible');
+  document.getElementById('statusDot').className = 'status-dot offline';
+  document.getElementById('statusText').textContent = 'Backend Offline';
+  wakingUp = false;
   return false;
 }
 
@@ -469,42 +481,39 @@ detectBtn.addEventListener('click', async () => {
   detectBtn.disabled = true;
 
   try {
-    // If backend offline, try to wake it first
+    // Make sure backend is awake
     if (!backendOnline) {
-      const alive = await wakeBackend();
+      const alive = await wakeBackend(true);
       if (!alive) {
         hideLoading();
         detectBtn.disabled = false;
-        toast('Backend unreachable. Please wait 60 seconds and try again.','error',5000);
+        toast('Backend is offline. Please try again in a minute.','error',6000);
         return;
       }
     }
 
-    setLoadingSub('Sending image to backend…');
-    const result = await predictFromBackend(currentFile);
+    setLoadingSub('');
+    let result;
+    try {
+      result = await predictFromBackend(currentFile);
+    } catch(fetchErr) {
+      // Fetch failed mid-request — wake and retry once
+      setLoadingSub('Connection lost — retrying…');
+      backendOnline = false;
+      const alive = await wakeBackend(true);
+      if (!alive) throw new Error('Backend went offline. Try again in a minute.');
+      result = await predictFromBackend(currentFile);
+    }
+
     displayResult(result);
     saveToHistory(result);
     loadHistory();
     updateStats();
     updateCharts();
     toast(`Analysis complete: ${result.result}`, result.result==='FAKE'?'error':'success');
+
   } catch(err) {
-    // On fetch failure, try waking and retry once
-    try {
-      setLoadingSub('Connection lost. Retrying…');
-      const alive = await wakeBackend();
-      if (alive) {
-        const result = await predictFromBackend(currentFile);
-        displayResult(result);
-        saveToHistory(result);
-        loadHistory(); updateStats(); updateCharts();
-        toast(`Analysis complete: ${result.result}`, result.result==='FAKE'?'error':'success');
-      } else {
-        toast('Backend unreachable. Try again in 60 seconds.','error',5000);
-      }
-    } catch(e2) {
-      toast(`Failed: ${e2.message}`,'error',5000);
-    }
+    toast(`Error: ${err.message}`,'error',6000);
   } finally {
     hideLoading();
     detectBtn.disabled = false;
@@ -523,12 +532,12 @@ async function predictFromBackend(file) {
     clearTimeout(tid);
     if (!res.ok) {
       const err = await res.json().catch(()=>({error:'Server error'}));
-      throw new Error(err.error || `HTTP ${res.status}`);
+      throw new Error(err.error||`HTTP ${res.status}`);
     }
     return await res.json();
   } catch(e) {
     clearTimeout(tid);
-    if (e.name==='AbortError') throw new Error('Request timed out after 90s');
+    if (e.name==='AbortError') throw new Error('Request timed out after 90s. Try again.');
     throw e;
   }
 }
@@ -542,47 +551,47 @@ function displayResult(r) {
   badge.className = `result-badge ${r.result}`;
   document.getElementById('resConfidence').textContent = `${r.confidence}%`;
   document.getElementById('resTier').textContent = `${r.confidence_tier||'—'} Confidence`;
-  document.getElementById('resAuthenticity').textContent = r.authenticity_score ?? '—';
-  document.getElementById('resRisk').textContent = r.risk_score ?? '—';
+  document.getElementById('resAuthenticity').textContent = r.authenticity_score??'—';
+  document.getElementById('resRisk').textContent = r.risk_score??'—';
   document.getElementById('resFakeProb').textContent = `${r.fake_probability??'—'}%`;
   document.getElementById('riskDot').className = `risk-dot ${r.risk_level||'LOW'}`;
-  document.getElementById('riskLevel').textContent = r.risk_level || '—';
+  document.getElementById('riskLevel').textContent = r.risk_level||'—';
   setTimeout(() => {
     document.getElementById('confBarFill').style.width = `${r.confidence}%`;
     document.getElementById('confBarLabel').textContent = `${r.confidence}%`;
   }, 100);
-  const exp = r.explanation || {};
-  setXAI('xaiFace','xaiFaceBar', exp.face_consistency, exp.face_consistency_score);
-  setXAI('xaiTexture','xaiTextureBar', exp.texture_artifacts, exp.texture_artifact_score);
-  setXAI('xaiComp','xaiCompBar', exp.compression_anomalies, exp.compression_score);
+  const exp = r.explanation||{};
+  setXAI('xaiFace','xaiFaceBar',exp.face_consistency,exp.face_consistency_score);
+  setXAI('xaiTexture','xaiTextureBar',exp.texture_artifacts,exp.texture_artifact_score);
+  setXAI('xaiComp','xaiCompBar',exp.compression_anomalies,exp.compression_score);
 }
 
-function setXAI(lid, bid, level, score) {
-  const el=document.getElementById(lid), bar=document.getElementById(bid);
-  if (!el||!bar) return;
-  el.textContent = level||'—';
-  el.className = `xai-level ${level||''}`;
-  bar.style.width = `${score??(level==='LOW'?25:level==='MEDIUM'?55:85)}%`;
-  bar.className = `xai-bar-fill ${(level||'').toLowerCase()}`;
+function setXAI(lid,bid,level,score) {
+  const el=document.getElementById(lid),bar=document.getElementById(bid);
+  if(!el||!bar) return;
+  el.textContent=level||'—';
+  el.className=`xai-level ${level||''}`;
+  bar.style.width=`${score??(level==='LOW'?25:level==='MEDIUM'?55:85)}%`;
+  bar.className=`xai-bar-fill ${(level||'').toLowerCase()}`;
 }
 
 // ── HISTORY ───────────────────────────────────────────
 function getHistory() { try { return JSON.parse(localStorage.getItem(HISTORY_KEY)||'[]'); } catch { return []; } }
 
 function saveToHistory(r) {
-  const h = getHistory();
-  h.unshift({ id:Math.random().toString(36).slice(2,10), result:r.result, confidence:r.confidence, risk_score:r.risk_score, risk_level:r.risk_level, timestamp:new Date().toISOString() });
-  if (h.length>200) h.length=200;
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+  const h=getHistory();
+  h.unshift({id:Math.random().toString(36).slice(2,10),result:r.result,confidence:r.confidence,risk_score:r.risk_score,risk_level:r.risk_level,timestamp:new Date().toISOString()});
+  if(h.length>200) h.length=200;
+  localStorage.setItem(HISTORY_KEY,JSON.stringify(h));
 }
 
 function loadHistory() {
-  const h = getHistory();
-  const list = document.getElementById('historyList');
-  if (!h.length) { list.innerHTML='<div class="history-empty">No scans yet. Upload an image to begin.</div>'; return; }
-  list.innerHTML = h.slice(0,50).map(x => {
-    const time = x.timestamp ? new Date(x.timestamp).toLocaleTimeString() : '—';
-    const risk = x.risk_level||(x.risk_score>=60?'HIGH':x.risk_score>=30?'MEDIUM':'LOW');
+  const h=getHistory();
+  const list=document.getElementById('historyList');
+  if(!h.length){list.innerHTML='<div class="history-empty">No scans yet. Upload an image to begin.</div>';return;}
+  list.innerHTML=h.slice(0,50).map(x=>{
+    const time=x.timestamp?new Date(x.timestamp).toLocaleTimeString():'—';
+    const risk=x.risk_level||(x.risk_score>=60?'HIGH':x.risk_score>=30?'MEDIUM':'LOW');
     return `<div class="history-item">
       <span class="history-result ${x.result}">${x.result}</span>
       <span class="history-conf">${(x.confidence||0).toFixed(1)}%</span>
@@ -592,16 +601,16 @@ function loadHistory() {
   }).join('');
 }
 
-document.getElementById('clearHistoryBtn').addEventListener('click', () => {
-  if (!confirm('Clear all prediction history?')) return;
+document.getElementById('clearHistoryBtn').addEventListener('click',()=>{
+  if(!confirm('Clear all prediction history?')) return;
   localStorage.removeItem(HISTORY_KEY);
-  loadHistory(); updateStats(); updateCharts();
+  loadHistory();updateStats();updateCharts();
   toast('History cleared.','info');
 });
 
 // ── STATS ─────────────────────────────────────────────
 function updateStats() {
-  const h=getHistory(), total=h.length;
+  const h=getHistory(),total=h.length;
   const fakes=h.filter(x=>x.result==='FAKE').length;
   const confs=h.map(x=>x.confidence).filter(Boolean);
   const risks=h.map(x=>x.risk_score).filter(v=>v!=null);
@@ -650,31 +659,45 @@ function updateCharts() {
 
 // ── CAMERA ────────────────────────────────────────────
 let cameraStream=null;
-document.getElementById('cameraBtn').addEventListener('click', async () => {
+document.getElementById('cameraBtn').addEventListener('click',async()=>{
   document.getElementById('cameraModal').style.display='flex';
   try {
     cameraStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});
     document.getElementById('cameraVideo').srcObject=cameraStream;
-  } catch(e) { toast('Camera access denied.','error'); document.getElementById('cameraModal').style.display='none'; }
+  } catch(e){toast('Camera access denied.','error');document.getElementById('cameraModal').style.display='none';}
 });
-document.getElementById('snapBtn').addEventListener('click', () => {
-  const v=document.getElementById('cameraVideo'), c=document.getElementById('cameraCanvas');
-  c.width=v.videoWidth; c.height=v.videoHeight;
+document.getElementById('snapBtn').addEventListener('click',()=>{
+  const v=document.getElementById('cameraVideo'),c=document.getElementById('cameraCanvas');
+  c.width=v.videoWidth;c.height=v.videoHeight;
   c.getContext('2d').drawImage(v,0,0);
-  c.toBlob(blob=>{ handleFile(new File([blob],'capture.jpg',{type:'image/jpeg'})); closeCamera(); },'image/jpeg',0.92);
+  c.toBlob(blob=>{handleFile(new File([blob],'capture.jpg',{type:'image/jpeg'}));closeCamera();},'image/jpeg',0.92);
 });
-document.getElementById('closeCameraBtn').addEventListener('click', closeCamera);
-function closeCamera() {
+document.getElementById('closeCameraBtn').addEventListener('click',closeCamera);
+function closeCamera(){
   if(cameraStream){cameraStream.getTracks().forEach(t=>t.stop());cameraStream=null;}
   document.getElementById('cameraModal').style.display='none';
 }
 
 // ── INIT ──────────────────────────────────────────────
 async function init() {
-  initCharts(); loadHistory(); updateStats(); updateCharts();
-  await checkHealth();
-  setInterval(checkHealth, 30000);
+  initCharts();
+  loadHistory();
+  updateStats();
+  updateCharts();
+
+  // Initial health check — silent
+  const alive = await checkHealth();
+
+  // If not alive on page load, quietly wake in background
+  if (!alive) wakeBackend(false);
+
+  // Check every 30s — if offline, silently retry
+  setInterval(async () => {
+    const ok = await checkHealth();
+    if (!ok && !wakingUp) wakeBackend(false);
+  }, 30000);
 }
+
 init();
 </script>
 </body>
