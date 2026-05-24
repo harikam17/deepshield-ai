@@ -856,8 +856,8 @@
 //  CONFIG
 // ═══════════════════════════════════════════════════════
 const API_BASE_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-  ? 'http://127.0.0.1:5000'
-  : (window.DEEPSHIELD_API_URL || 'http://127.0.0.1:5000');
+  ? 'https://deepshield-ai-backend.onrender.com'
+  : (window.DEEPSHIELD_API_URL || 'https://deepshield-ai-backend.onrender.com');
 
 const HISTORY_KEY = 'deepshield_history_v2';
 let backendOnline = false;
