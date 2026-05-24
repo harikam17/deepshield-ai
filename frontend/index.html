@@ -859,13 +859,15 @@ const API_BASE_URL = 'https://deepshield-ai-backend.onrender.com';
   ? 'https://deepshield-ai-backend.onrender.com'
   : (window.DEEPSHIELD_API_URL || 'https://deepshield-ai-backend.onrender.com');
 
+const API_BASE_URL = window.DEEPSHIELD_API_URL || 'https://deepshield-ai-backend.onrender.com';
+
 const HISTORY_KEY = 'deepshield_history_v2';
 let backendOnline = false;
 let currentFile = null;
 let charts = {};
 
 // ═══════════════════════════════════════════════════════
-//  TOAST
+// TOAST
 // ═══════════════════════════════════════════════════════
 function toast(msg, type = 'info', duration = 3000) {
   const container = document.getElementById('toastContainer');
